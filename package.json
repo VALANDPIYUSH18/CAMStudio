@@ -1,0 +1,25 @@
+{
+  "name": "fullstack-project",
+  "version": "1.0.0",
+  "description": "A modern fullstack web application",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && mvn spring-boot:run",
+    "build": "npm run build:frontend && npm run build:backend",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && mvn clean package -DskipTests",
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && mvn clean install -DskipTests",
+    "test": "npm run test:frontend && npm run test:backend",
+    "test:frontend": "cd frontend && npm test",
+    "test:backend": "cd backend && mvn test",
+    "start:backend": "cd backend && mvn spring-boot:run -Dspring-boot.run.profiles=prod"
+  },
+  "keywords": ["fullstack", "react", "spring-boot", "java", "typescript"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
