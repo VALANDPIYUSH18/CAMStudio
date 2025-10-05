@@ -1,0 +1,24 @@
+spring:
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+  datasource:
+    hikari:
+      leak-detection-threshold: 60000
+
+logging:
+  level:
+    com.photocrm: DEBUG
+    org.springframework.web: DEBUG
+    org.springframework.security: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+
+# Development specific configuration
+app:
+  photo:
+    storage-path: ./uploads
+  tenant:
+    auto-create-schema: true
