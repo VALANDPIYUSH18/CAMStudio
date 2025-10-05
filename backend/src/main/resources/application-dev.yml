@@ -1,0 +1,12 @@
+# Development profile configuration
+spring:
+  devtools:
+    restart:
+      enabled: true
+    livereload:
+      enabled: true
+
+logging:
+  level:
+    com.fullstack.app: DEBUG
+    org.springframework.web: DEBUG

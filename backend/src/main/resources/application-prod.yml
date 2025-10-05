@@ -1,0 +1,12 @@
+# Production profile configuration
+logging:
+  level:
+    com.fullstack.app: INFO
+    org.springframework.web: WARN
+    root: WARN
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

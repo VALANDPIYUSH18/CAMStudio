@@ -6,16 +6,17 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
     "dev:frontend": "cd frontend && npm run dev",
-    "dev:backend": "cd backend && npm run dev",
+    "dev:backend": "cd backend && mvn spring-boot:run",
     "build": "npm run build:frontend && npm run build:backend",
     "build:frontend": "cd frontend && npm run build",
-    "build:backend": "cd backend && npm run build",
-    "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install",
+    "build:backend": "cd backend && mvn clean package -DskipTests",
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && mvn clean install -DskipTests",
     "test": "npm run test:frontend && npm run test:backend",
     "test:frontend": "cd frontend && npm test",
-    "test:backend": "cd backend && npm test"
+    "test:backend": "cd backend && mvn test",
+    "start:backend": "cd backend && mvn spring-boot:run -Dspring-boot.run.profiles=prod"
   },
-  "keywords": ["fullstack", "react", "nodejs", "typescript"],
+  "keywords": ["fullstack", "react", "spring-boot", "java", "typescript"],
   "author": "",
   "license": "MIT",
   "devDependencies": {
