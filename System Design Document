@@ -1,0 +1,1581 @@
+Photo CRM SaaS - System Design Document
+Version: 1.0
+Date: December 2024
+Architect: Bob
+Document Status: Technical Design Review
+
+Implementation Approach
+We will implement a cloud-native, multi-tenant SaaS platform using modern microservices architecture with the following critical requirements:
+
+Difficult/Critical Requirements Analysis
+Multi-tenant Data Isolation: Implement schema-based multi-tenancy in PostgreSQL with row-level security (RLS) to ensure complete data isolation between photography studios while maintaining performance.
+
+High-Volume Photo Management: Handle large RAW image files (up to 50MB) with efficient upload, processing, and delivery using S3/MinIO storage, Lambda functions for thumbnail generation, and CloudFront CDN for global delivery.
+
+Real-time Collaboration: Support multiple staff members working simultaneously on orders using WebSocket connections for real-time updates and optimistic locking for conflict resolution.
+
+Payment Processing Security: Implement PCI DSS compliant payment processing with webhook handling, idempotent operations, and secure tokenization using Stripe/Razorpay SDKs.
+
+Performance at Scale: Support 1000+ concurrent users with <200ms API response times through horizontal scaling, database read replicas, Redis caching, and efficient connection pooling.
+
+Technology Stack Selection
+Frontend Framework: React 18 with TypeScript for type safety, Tailwind CSS for responsive design, and Shadcn-ui for consistent component library.
+
+Backend Framework: Spring Boot 3.x with Java 17 for enterprise-grade scalability, Spring Security for authentication/authorization, and Spring Data JPA for database operations.
+
+Database: PostgreSQL 15+ with multi-tenant schema design, connection pooling via HikariCP, and read replicas for query optimization.
+
+Storage & CDN: AWS S3 for photo storage with lifecycle policies, CloudFront CDN for global delivery, and Lambda for image processing.
+
+Authentication: JWT tokens with refresh token rotation, Redis for session management, and role-based access control (RBAC).
+
+Main User-UI Interaction Patterns
+1. Studio Admin Workflow
+Dashboard Access: Single-page overview of studio metrics, recent orders, and pending payments
+Order Management: Create new orders, assign photographers, track progress, and manage client communications
+Team Management: Invite staff members, assign roles, and monitor team performance
+Financial Operations: Generate invoices, process payments, track expenses, and view revenue analytics
+2. Staff Photographer Workflow
+Order Assignment: Receive notifications for new assignments and view order details
+Photo Upload: Batch upload photos with progress tracking and automatic thumbnail generation
+Client Communication: Send gallery links, respond to client questions, and manage photo selections
+Status Updates: Update order progress and collaborate with team members in real-time
+3. Client Interaction Workflow
+Gallery Access: Access photo galleries via QR code or direct link without account creation
+Photo Selection: Browse photos in responsive grid, select favorites, and add to cart
+Review & Payment: Review selected photos with pricing, provide delivery details, and complete payment
+Download Access: Download purchased photos in various resolutions with watermark removal
+System Architecture
+@startuml Photo_CRM_Architecture
+
+!define RECTANGLE class
+
+package "Client Layer" {
+    [Web Browser] as browser
+    [Mobile Browser] as mobile
+    [Admin Dashboard] as admin_ui
+}
+
+package "CDN & Load Balancer" {
+    [CloudFront CDN] as cdn
+    [Application Load Balancer] as alb
+}
+
+package "Application Layer" {
+    [API Gateway] as gateway
+    [Auth Service] as auth
+    [Photo Service] as photo
+    [Order Service] as order
+    [Payment Service] as payment
+    [Notification Service] as notification
+}
+
+package "Data Layer" {
+    [PostgreSQL Primary] as db_primary
+    [PostgreSQL Read Replica] as db_replica
+    [Redis Cache] as redis
+    [S3 Storage] as s3
+}
+
+package "External Services" {
+    [Stripe API] as stripe
+    [Razorpay API] as razorpay
+    [Email Service] as email
+    [SMS Service] as sms
+}
+
+package "Processing Layer" {
+    [Image Processing Lambda] as lambda
+    [Background Jobs] as jobs
+}
+
+' Client connections
+browser --> cdn
+mobile --> cdn
+admin_ui --> cdn
+
+' CDN and Load Balancer
+cdn --> alb
+alb --> gateway
+
+' API Gateway routing
+gateway --> auth
+gateway --> photo
+gateway --> order
+gateway --> payment
+gateway --> notification
+
+' Service dependencies
+auth --> db_primary
+auth --> redis
+photo --> db_primary
+photo --> s3
+photo --> lambda
+order --> db_primary
+order --> db_replica
+payment --> db_primary
+payment --> stripe
+payment --> razorpay
+notification --> email
+notification --> sms
+
+' Background processing
+jobs --> db_primary
+jobs --> s3
+lambda --> s3
+
+@enduml
+UI Navigation Flow
+@startuml Photo_CRM_Navigation
+
+state "Authentication" as Auth {
+    [*] --> Login
+    Login --> Dashboard : success
+    Login --> Register : new user
+    Register --> Dashboard : success
+}
+
+state "Admin Dashboard" as AdminDash {
+    Dashboard --> OrderManagement : manage orders
+    Dashboard --> TeamManagement : manage team
+    Dashboard --> Analytics : view reports
+    Dashboard --> Settings : configure studio
+}
+
+state "Order Management" as OrderMgmt {
+    OrderManagement --> CreateOrder : new order
+    OrderManagement --> OrderDetails : view/edit
+    OrderDetails --> PhotoGallery : manage photos
+    OrderDetails --> InvoiceGeneration : create invoice
+}
+
+state "Photo Gallery" as Gallery {
+    PhotoGallery --> PhotoUpload : add photos
+    PhotoGallery --> ClientView : share with client
+    ClientView --> PhotoSelection : client selects
+    PhotoSelection --> PaymentProcess : proceed to pay
+}
+
+state "Payment Process" as Payment {
+    PaymentProcess --> PaymentSuccess : payment complete
+    PaymentProcess --> PaymentFailed : retry payment
+    PaymentSuccess --> PhotoDownload : access downloads
+}
+
+' Navigation paths
+Auth --> AdminDash : admin/staff login
+Auth --> Gallery : client access
+AdminDash --> OrderMgmt : primary workflow
+OrderMgmt --> Gallery : photo management
+Gallery --> Payment : client workflow
+Payment --> [*] : complete
+
+@enduml
+Class Diagram
+@startuml Photo_CRM_Classes
+
+interface ITenantService {
+    +createTenant(tenantData: TenantCreateRequest): TenantResponse
+    +updateTenant(tenantId: UUID, tenantData: TenantUpdateRequest): TenantResponse
+    +getTenant(tenantId: UUID): TenantResponse
+    +deleteTenant(tenantId: UUID): void
+}
+
+interface IUserService {
+    +createUser(userData: UserCreateRequest): UserResponse
+    +authenticateUser(credentials: LoginRequest): AuthResponse
+    +updateUser(userId: UUID, userData: UserUpdateRequest): UserResponse
+    +getUsersByTenant(tenantId: UUID): List<UserResponse>
+    +deactivateUser(userId: UUID): void
+}
+
+interface IPhotoService {
+    +uploadPhoto(photoData: PhotoUploadRequest): PhotoResponse
+    +batchUploadPhotos(photos: List<PhotoUploadRequest>): BatchUploadResponse
+    +generateThumbnail(photoId: UUID): ThumbnailResponse
+    +getPhotosByOrder(orderId: UUID): List<PhotoResponse>
+    +deletePhoto(photoId: UUID): void
+    +getPresignedUrl(photoId: UUID, operation: String): PresignedUrlResponse
+}
+
+interface IOrderService {
+    +createOrder(orderData: OrderCreateRequest): OrderResponse
+    +updateOrder(orderId: UUID, orderData: OrderUpdateRequest): OrderResponse
+    +getOrdersByTenant(tenantId: UUID, filters: OrderFilters): PagedResponse<OrderResponse>
+    +assignPhotographer(orderId: UUID, photographerId: UUID): void
+    +updateOrderStatus(orderId: UUID, status: OrderStatus): void
+}
+
+interface IPaymentService {
+    +createPaymentIntent(paymentData: PaymentCreateRequest): PaymentIntentResponse
+    +processPayment(paymentId: UUID, paymentMethod: PaymentMethodRequest): PaymentResponse
+    +handleWebhook(provider: PaymentProvider, payload: String): WebhookResponse
+    +refundPayment(paymentId: UUID, amount: BigDecimal): RefundResponse
+}
+
+interface IInvoiceService {
+    +generateInvoice(orderId: UUID): InvoiceResponse
+    +getInvoicePdf(invoiceId: UUID): byte[]
+    +sendInvoiceEmail(invoiceId: UUID): void
+    +updateInvoiceStatus(invoiceId: UUID, status: InvoiceStatus): void
+}
+
+class TenantEntity {
+    +id: UUID
+    +name: String
+    +subdomain: String
+    +plan: SubscriptionPlan
+    +settings: TenantSettings
+    +createdAt: LocalDateTime
+    +updatedAt: LocalDateTime
+    +isActive: Boolean
+}
+
+class UserEntity {
+    +id: UUID
+    +tenantId: UUID
+    +email: String
+    +passwordHash: String
+    +firstName: String
+    +lastName: String
+    +role: UserRole
+    +permissions: Set<Permission>
+    +lastLoginAt: LocalDateTime
+    +createdAt: LocalDateTime
+    +isActive: Boolean
+}
+
+class OrderEntity {
+    +id: UUID
+    +tenantId: UUID
+    +clientId: UUID
+    +photographerId: UUID
+    +title: String
+    +description: String
+    +eventDate: LocalDate
+    +status: OrderStatus
+    +totalAmount: BigDecimal
+    +createdAt: LocalDateTime
+    +updatedAt: LocalDateTime
+}
+
+class PhotoEntity {
+    +id: UUID
+    +orderId: UUID
+    +tenantId: UUID
+    +filename: String
+    +originalUrl: String
+    +thumbnailUrl: String
+    +fileSize: Long
+    +mimeType: String
+    +metadata: PhotoMetadata
+    +uploadedAt: LocalDateTime
+    +isSelected: Boolean
+}
+
+class InvoiceEntity {
+    +id: UUID
+    +orderId: UUID
+    +tenantId: UUID
+    +invoiceNumber: String
+    +amount: BigDecimal
+    +tax: BigDecimal
+    +status: InvoiceStatus
+    +dueDate: LocalDate
+    +paidAt: LocalDateTime
+    +createdAt: LocalDateTime
+}
+
+class PaymentEntity {
+    +id: UUID
+    +invoiceId: UUID
+    +tenantId: UUID
+    +provider: PaymentProvider
+    +providerTransactionId: String
+    +amount: BigDecimal
+    +currency: String
+    +status: PaymentStatus
+    +paidAt: LocalDateTime
+    +createdAt: LocalDateTime
+}
+
+' Service implementations
+class TenantServiceImpl implements ITenantService
+class UserServiceImpl implements IUserService
+class PhotoServiceImpl implements IPhotoService
+class OrderServiceImpl implements IOrderService
+class PaymentServiceImpl implements IPaymentService
+class InvoiceServiceImpl implements IInvoiceService
+
+' Entity relationships
+TenantEntity ||--o{ UserEntity : "has users"
+TenantEntity ||--o{ OrderEntity : "has orders"
+OrderEntity ||--o{ PhotoEntity : "contains photos"
+OrderEntity ||--o{ InvoiceEntity : "generates invoices"
+InvoiceEntity ||--o{ PaymentEntity : "receives payments"
+UserEntity ||--o{ OrderEntity : "assigned to"
+
+@enduml
+Sequence Diagram
+@startuml Photo_CRM_Sequence
+
+actor "Studio Admin" as admin
+actor "Staff Photographer" as staff
+actor "Client" as client
+participant "Web UI" as ui
+participant "API Gateway" as gateway
+participant "Auth Service" as auth
+participant "Order Service" as order
+participant "Photo Service" as photo
+participant "Payment Service" as payment
+participant "S3 Storage" as s3
+participant "Database" as db
+participant "Notification Service" as notification
+
+== Order Creation Workflow ==
+
+admin -> ui: Create New Order
+ui -> gateway: POST /api/orders
+gateway -> auth: Validate JWT Token
+    note right
+        Input: {
+            "authorization": "Bearer jwt_token"
+        }
+    end note
+auth --> gateway: Token Valid
+    note right
+        Output: {
+            "userId": "uuid",
+            "tenantId": "uuid",
+            "role": "ADMIN"
+        }
+    end note
+
+gateway -> order: Create Order
+    note right
+        Input: {
+            "title": "Wedding Photography - Smith",
+            "clientName": "John Smith",
+            "clientEmail": "john@example.com",
+            "eventDate": "2024-06-15",
+            "photographerId": "photographer_uuid",
+            "packageType": "PREMIUM"
+        }
+    end note
+order -> db: INSERT order record
+order --> gateway: Order Created
+    note right
+        Output: {
+            "orderId": "order_uuid",
+            "status": "CREATED",
+            "galleryUrl": "https://studio.app/gallery/order_uuid",
+            "qrCode": "base64_qr_code_data"
+        }
+    end note
+gateway --> ui: Order Response
+ui -> notification: Send Assignment Email
+notification -> staff: Email Notification
+
+== Photo Upload Workflow ==
+
+staff -> ui: Upload Photos to Order
+ui -> gateway: POST /api/photos/batch-upload
+gateway -> auth: Validate Staff Token
+auth --> gateway: Token Valid
+
+gateway -> photo: Process Batch Upload
+    note right
+        Input: {
+            "orderId": "order_uuid",
+            "photos": [
+                {
+                    "filename": "IMG_001.jpg",
+                    "fileSize": 25600000,
+                    "mimeType": "image/jpeg"
+                }
+            ]
+        }
+    end note
+
+photo -> s3: Generate Presigned URLs
+s3 --> photo: Presigned URLs
+    note right
+        Output: {
+            "uploadUrls": [
+                {
+                    "photoId": "photo_uuid",
+                    "uploadUrl": "https://s3.amazonaws.com/presigned-url",
+                    "thumbnailProcessingId": "process_uuid"
+                }
+            ]
+        }
+    end note
+
+photo -> db: INSERT photo records
+photo --> gateway: Upload URLs Response
+gateway --> ui: Presigned URLs
+
+ui -> s3: Upload Photos (Direct)
+s3 -> photo: Trigger Processing Lambda
+photo -> s3: Generate Thumbnails
+photo -> db: UPDATE photo records with URLs
+photo -> notification: Notify Client Gallery Ready
+notification -> client: SMS/Email with Gallery Link
+
+== Client Photo Selection Workflow ==
+
+client -> ui: Access Gallery (No Auth Required)
+ui -> gateway: GET /api/gallery/{orderId}/public
+gateway -> photo: Get Order Photos
+    note right
+        Input: {
+            "orderId": "order_uuid",
+            "includeMetadata": true
+        }
+    end note
+photo -> db: SELECT photos WHERE order_id
+photo --> gateway: Photos List
+    note right
+        Output: {
+            "photos": [
+                {
+                    "id": "photo_uuid",
+                    "thumbnailUrl": "https://cdn.example.com/thumb.jpg",
+                    "previewUrl": "https://cdn.example.com/preview.jpg",
+                    "price": 25.00,
+                    "isSelected": false
+                }
+            ],
+            "totalPhotos": 150,
+            "selectionLimit": 50
+        }
+    end note
+gateway --> ui: Gallery Data
+
+client -> ui: Select Photos
+ui -> gateway: POST /api/gallery/{orderId}/selections
+gateway -> photo: Update Selections
+    note right
+        Input: {
+            "selectedPhotoIds": ["photo_uuid_1", "photo_uuid_2"],
+            "clientInfo": {
+                "name": "John Smith",
+                "email": "john@example.com",
+                "phone": "+1234567890"
+            }
+        }
+    end note
+photo -> db: UPDATE photo selections
+photo -> order: Calculate Total Amount
+order -> db: UPDATE order total
+photo --> gateway: Selection Saved
+    note right
+        Output: {
+            "selectedCount": 25,
+            "totalAmount": 625.00,
+            "tax": 56.25,
+            "finalAmount": 681.25
+        }
+    end note
+gateway --> ui: Selection Confirmation
+
+== Payment Processing Workflow ==
+
+client -> ui: Proceed to Payment
+ui -> gateway: POST /api/payments/create-intent
+gateway -> payment: Create Payment Intent
+    note right
+        Input: {
+            "orderId": "order_uuid",
+            "amount": 681.25,
+            "currency": "USD",
+            "paymentMethod": "STRIPE"
+        }
+    end note
+payment -> db: INSERT payment record
+payment -> "Stripe API": Create Payment Intent
+"Stripe API" --> payment: Payment Intent
+    note right
+        Output: {
+            "paymentIntentId": "pi_stripe_id",
+            "clientSecret": "pi_stripe_secret",
+            "amount": 68125,
+            "currency": "usd"
+        }
+    end note
+payment --> gateway: Payment Intent Response
+gateway --> ui: Client Secret
+
+client -> ui: Complete Payment
+ui -> "Stripe API": Confirm Payment (Direct)
+"Stripe API" -> payment: Webhook Notification
+payment -> db: UPDATE payment status
+payment -> order: Update Order Status
+order -> db: UPDATE order status = PAID
+payment -> notification: Send Confirmation
+notification -> client: Payment Confirmation Email
+notification -> admin: Payment Received Notification
+
+== Photo Download Workflow ==
+
+client -> ui: Access Download Link
+ui -> gateway: GET /api/downloads/{orderId}
+gateway -> auth: Validate Download Token
+auth --> gateway: Token Valid
+gateway -> photo: Generate Download URLs
+photo -> s3: Generate Presigned Download URLs
+s3 --> photo: Download URLs
+photo --> gateway: Download Response
+    note right
+        Output: {
+            "downloadUrls": [
+                {
+                    "photoId": "photo_uuid",
+                    "highResUrl": "https://s3.amazonaws.com/download-url",
+                    "expiresAt": "2024-12-31T23:59:59Z"
+                }
+            ],
+            "zipUrl": "https://s3.amazonaws.com/zip-download-url"
+        }
+    end note
+gateway --> ui: Download URLs
+ui -> s3: Download Photos (Direct)
+
+@enduml
+Database ER Diagram
+@startuml Photo_CRM_ERD
+
+!define primary_key(x) <b><color:red>x</color></b>
+!define foreign_key(x) <color:blue>x</color>
+!define unique(x) <color:green>x</color>
+
+entity "tenants" as tenants {
+    primary_key(id) : UUID
+    --
+    * name : VARCHAR(255)
+    unique(subdomain) : VARCHAR(100)
+    * plan : VARCHAR(50)
+    * settings : JSONB
+    * created_at : TIMESTAMP
+    * updated_at : TIMESTAMP
+    * is_active : BOOLEAN
+}
+
+entity "users" as users {
+    primary_key(id) : UUID
+    --
+    foreign_key(tenant_id) : UUID
+    unique(email) : VARCHAR(255)
+    * password_hash : VARCHAR(255)
+    * first_name : VARCHAR(100)
+    * last_name : VARCHAR(100)
+    * role : VARCHAR(50)
+    * permissions : JSONB
+    last_login_at : TIMESTAMP
+    * created_at : TIMESTAMP
+    * updated_at : TIMESTAMP
+    * is_active : BOOLEAN
+}
+
+entity "clients" as clients {
+    primary_key(id) : UUID
+    --
+    foreign_key(tenant_id) : UUID
+    * name : VARCHAR(255)
+    * email : VARCHAR(255)
+    phone : VARCHAR(20)
+    address : TEXT
+    * created_at : TIMESTAMP
+    * updated_at : TIMESTAMP
+}
+
+entity "orders" as orders {
+    primary_key(id) : UUID
+    --
+    foreign_key(tenant_id) : UUID
+    foreign_key(client_id) : UUID
+    foreign_key(photographer_id) : UUID
+    * title : VARCHAR(255)
+    description : TEXT
+    event_date : DATE
+    * status : VARCHAR(50)
+    total_amount : DECIMAL(10,2)
+    gallery_url : VARCHAR(500)
+    qr_code : TEXT
+    * created_at : TIMESTAMP
+    * updated_at : TIMESTAMP
+}
+
+entity "photos" as photos {
+    primary_key(id) : UUID
+    --
+    foreign_key(order_id) : UUID
+    foreign_key(tenant_id) : UUID
+    * filename : VARCHAR(255)
+    * original_url : VARCHAR(500)
+    * thumbnail_url : VARCHAR(500)
+    preview_url : VARCHAR(500)
+    * file_size : BIGINT
+    * mime_type : VARCHAR(100)
+    metadata : JSONB
+    * uploaded_at : TIMESTAMP
+    is_selected : BOOLEAN
+    selection_order : INTEGER
+    price : DECIMAL(8,2)
+}
+
+entity "photo_selections" as selections {
+    primary_key(id) : UUID
+    --
+    foreign_key(order_id) : UUID
+    foreign_key(photo_id) : UUID
+    foreign_key(tenant_id) : UUID
+    * selected_at : TIMESTAMP
+    client_notes : TEXT
+}
+
+entity "invoices" as invoices {
+    primary_key(id) : UUID
+    --
+    foreign_key(order_id) : UUID
+    foreign_key(tenant_id) : UUID
+    unique(invoice_number) : VARCHAR(50)
+    * subtotal : DECIMAL(10,2)
+    * tax_amount : DECIMAL(10,2)
+    * total_amount : DECIMAL(10,2)
+    * status : VARCHAR(50)
+    * due_date : DATE
+    paid_at : TIMESTAMP
+    * created_at : TIMESTAMP
+    * updated_at : TIMESTAMP
+}
+
+entity "payments" as payments {
+    primary_key(id) : UUID
+    --
+    foreign_key(invoice_id) : UUID
+    foreign_key(tenant_id) : UUID
+    * provider : VARCHAR(50)
+    unique(provider_transaction_id) : VARCHAR(255)
+    * amount : DECIMAL(10,2)
+    * currency : VARCHAR(3)
+    * status : VARCHAR(50)
+    payment_method : VARCHAR(50)
+    paid_at : TIMESTAMP
+    * created_at : TIMESTAMP
+    * updated_at : TIMESTAMP
+}
+
+entity "expenses" as expenses {
+    primary_key(id) : UUID
+    --
+    foreign_key(order_id) : UUID
+    foreign_key(tenant_id) : UUID
+    foreign_key(user_id) : UUID
+    * category : VARCHAR(100)
+    * description : VARCHAR(255)
+    * amount : DECIMAL(10,2)
+    receipt_url : VARCHAR(500)
+    * expense_date : DATE
+    * created_at : TIMESTAMP
+    * updated_at : TIMESTAMP
+}
+
+entity "notifications" as notifications {
+    primary_key(id) : UUID
+    --
+    foreign_key(tenant_id) : UUID
+    foreign_key(user_id) : UUID
+    * type : VARCHAR(50)
+    * title : VARCHAR(255)
+    * message : TEXT
+    * channel : VARCHAR(50)
+    * status : VARCHAR(50)
+    sent_at : TIMESTAMP
+    * created_at : TIMESTAMP
+}
+
+entity "audit_logs" as audit_logs {
+    primary_key(id) : UUID
+    --
+    foreign_key(tenant_id) : UUID
+    foreign_key(user_id) : UUID
+    * entity_type : VARCHAR(100)
+    * entity_id : UUID
+    * action : VARCHAR(50)
+    * old_values : JSONB
+    * new_values : JSONB
+    * ip_address : INET
+    * user_agent : TEXT
+    * created_at : TIMESTAMP
+}
+
+' Relationships
+tenants ||--o{ users : "tenant_id"
+tenants ||--o{ clients : "tenant_id"
+tenants ||--o{ orders : "tenant_id"
+tenants ||--o{ photos : "tenant_id"
+tenants ||--o{ selections : "tenant_id"
+tenants ||--o{ invoices : "tenant_id"
+tenants ||--o{ payments : "tenant_id"
+tenants ||--o{ expenses : "tenant_id"
+tenants ||--o{ notifications : "tenant_id"
+tenants ||--o{ audit_logs : "tenant_id"
+
+clients ||--o{ orders : "client_id"
+users ||--o{ orders : "photographer_id"
+users ||--o{ expenses : "user_id"
+users ||--o{ notifications : "user_id"
+users ||--o{ audit_logs : "user_id"
+
+orders ||--o{ photos : "order_id"
+orders ||--o{ selections : "order_id"
+orders ||--o{ invoices : "order_id"
+orders ||--o{ expenses : "order_id"
+
+photos ||--o{ selections : "photo_id"
+invoices ||--o{ payments : "invoice_id"
+
+@enduml
+API Design and Endpoints
+Authentication Endpoints
+POST   /api/auth/login                    # User authentication
+POST   /api/auth/refresh                  # Refresh JWT token
+POST   /api/auth/logout                   # User logout
+POST   /api/auth/forgot-password          # Password reset request
+POST   /api/auth/reset-password           # Password reset confirmation
+Tenant Management Endpoints
+POST   /api/tenants                       # Create new tenant
+GET    /api/tenants/{tenantId}            # Get tenant details
+PUT    /api/tenants/{tenantId}            # Update tenant
+DELETE /api/tenants/{tenantId}            # Delete tenant
+GET    /api/tenants/{tenantId}/settings   # Get tenant settings
+PUT    /api/tenants/{tenantId}/settings   # Update tenant settings
+User Management Endpoints
+POST   /api/users                         # Create user
+GET    /api/users                         # List users (tenant-scoped)
+GET    /api/users/{userId}                # Get user details
+PUT    /api/users/{userId}                # Update user
+DELETE /api/users/{userId}                # Delete user
+POST   /api/users/{userId}/invite         # Send user invitation
+PUT    /api/users/{userId}/role           # Update user role
+Order Management Endpoints
+POST   /api/orders                        # Create order
+GET    /api/orders                        # List orders (tenant-scoped)
+GET    /api/orders/{orderId}              # Get order details
+PUT    /api/orders/{orderId}              # Update order
+DELETE /api/orders/{orderId}              # Delete order
+PUT    /api/orders/{orderId}/status       # Update order status
+PUT    /api/orders/{orderId}/assign       # Assign photographer
+Photo Management Endpoints
+POST   /api/photos/batch-upload           # Batch photo upload
+GET    /api/photos/order/{orderId}        # Get photos by order
+GET    /api/photos/{photoId}              # Get photo details
+DELETE /api/photos/{photoId}              # Delete photo
+POST   /api/photos/{photoId}/thumbnail    # Generate thumbnail
+GET    /api/photos/{photoId}/download     # Get download URL
+Gallery Endpoints (Public Access)
+GET    /api/gallery/{orderId}/public      # Get public gallery
+POST   /api/gallery/{orderId}/selections  # Submit photo selections
+GET    /api/gallery/{orderId}/selections  # Get current selections
+PUT    /api/gallery/{orderId}/selections  # Update selections
+Invoice Endpoints
+POST   /api/invoices                      # Create invoice
+GET    /api/invoices                      # List invoices (tenant-scoped)
+GET    /api/invoices/{invoiceId}          # Get invoice details
+PUT    /api/invoices/{invoiceId}          # Update invoice
+GET    /api/invoices/{invoiceId}/pdf      # Download invoice PDF
+POST   /api/invoices/{invoiceId}/send     # Send invoice email
+Payment Endpoints
+POST   /api/payments/create-intent        # Create payment intent
+POST   /api/payments/confirm              # Confirm payment
+GET    /api/payments/{paymentId}          # Get payment details
+POST   /api/payments/webhook/stripe       # Stripe webhook handler
+POST   /api/payments/webhook/razorpay     # Razorpay webhook handler
+POST   /api/payments/{paymentId}/refund   # Process refund
+Analytics Endpoints
+GET    /api/analytics/dashboard           # Dashboard metrics
+GET    /api/analytics/revenue             # Revenue analytics
+GET    /api/analytics/orders              # Order analytics
+GET    /api/analytics/photos              # Photo analytics
+GET    /api/analytics/clients             # Client analytics
+Security Architecture
+Multi-Tenant Isolation Strategy
+Database Level Isolation
+-- Row Level Security (RLS) Policy Example
+CREATE POLICY tenant_isolation ON orders
+    FOR ALL TO application_role
+    USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
+
+-- Tenant Context Setting
+SET app.current_tenant_id = 'tenant-uuid-here';
+Application Level Isolation
+Tenant ID Injection: Every database query automatically includes tenant_id filter
+JWT Token Validation: Each request validates tenant membership
+API Gateway Routing: Subdomain-based tenant routing (tenant1.photocrm.com)
+Data Encryption: Tenant-specific encryption keys for sensitive data
+Authentication & Authorization
+JWT Token Structure
+{
+  "sub": "user-uuid",
+  "tenant_id": "tenant-uuid",
+  "role": "ADMIN|STAFF|CLIENT",
+  "permissions": ["order:create", "photo:upload", "invoice:generate"],
+  "exp": 1640995200,
+  "iat": 1640908800
+}
+Role-Based Access Control (RBAC)
+ADMIN: Full access to tenant resources, user management, billing
+STAFF: Order management, photo upload, client communication
+CLIENT: Gallery access, photo selection, payment processing
+Security Headers & Middleware
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+    
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        return http
+            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/gallery/*/public").permitAll()
+                .requestMatchers("/api/payments/webhook/*").permitAll()
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                .requestMatchers("/api/staff/**").hasAnyRole("ADMIN", "STAFF")
+                .anyRequest().authenticated()
+            )
+            .oauth2ResourceServer().jwt()
+            .and()
+            .headers(headers -> headers
+                .frameOptions().deny()
+                .contentTypeOptions().and()
+                .httpStrictTransportSecurity(hstsConfig -> hstsConfig
+                    .maxAgeInSeconds(31536000)
+                    .includeSubdomains(true)
+                )
+            )
+            .build();
+    }
+}
+Data Protection Measures
+Encryption at Rest
+Database: PostgreSQL with TDE (Transparent Data Encryption)
+File Storage: S3 server-side encryption with KMS keys
+Sensitive Fields: Application-level encryption for PII data
+Encryption in Transit
+HTTPS Only: TLS 1.3 for all client communications
+Internal Services: mTLS between microservices
+Database Connections: SSL/TLS encrypted connections
+PCI DSS Compliance
+Payment Data: Never stored on our servers
+Tokenization: Stripe/Razorpay tokens for payment methods
+Audit Logging: All payment-related actions logged
+Network Segmentation: Payment services in isolated network
+Scalability and Performance Considerations
+Horizontal Scaling Strategy
+Application Tier Scaling
+# Kubernetes Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: photo-crm-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: photo-crm-api
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+Database Scaling Strategy
+Read Replicas: 2-3 read replicas for query distribution
+Connection Pooling: PgBouncer with 100-200 connections per pool
+Query Optimization: Proper indexing and query analysis
+Partitioning: Table partitioning by tenant_id for large tables
+Caching Strategy
+@Configuration
+@EnableCaching
+public class CacheConfig {
+    
+    @Bean
+    public CacheManager cacheManager() {
+        RedisCacheManager.Builder builder = RedisCacheManager
+            .RedisCacheManagerBuilder
+            .fromConnectionFactory(redisConnectionFactory())
+            .cacheDefaults(cacheConfiguration());
+        return builder.build();
+    }
+    
+    private RedisCacheConfiguration cacheConfiguration() {
+        return RedisCacheConfiguration.defaultCacheConfig()
+            .entryTtl(Duration.ofMinutes(30))
+            .serializeKeysWith(RedisSerializationContext.SerializationPair
+                .fromSerializer(new StringRedisSerializer()))
+            .serializeValuesWith(RedisSerializationContext.SerializationPair
+                .fromSerializer(new GenericJackson2JsonRedisSerializer()));
+    }
+}
+Performance Optimization
+Photo Upload Optimization
+Presigned URLs: Direct S3 uploads to reduce server load
+Multipart Upload: Large files uploaded in chunks
+Background Processing: Thumbnail generation via Lambda
+CDN Integration: CloudFront for global photo delivery
+Database Performance
+-- Essential Indexes for Performance
+CREATE INDEX CONCURRENTLY idx_orders_tenant_status ON orders(tenant_id, status);
+CREATE INDEX CONCURRENTLY idx_photos_order_selected ON photos(order_id, is_selected);
+CREATE INDEX CONCURRENTLY idx_users_tenant_email ON users(tenant_id, email);
+CREATE INDEX CONCURRENTLY idx_payments_invoice_status ON payments(invoice_id, status);
+
+-- Partial Indexes for Active Records
+CREATE INDEX CONCURRENTLY idx_active_orders ON orders(tenant_id, created_at) 
+    WHERE is_active = true;
+API Response Optimization
+Pagination: Cursor-based pagination for large datasets
+Field Selection: GraphQL-style field selection for REST APIs
+Response Compression: Gzip compression for API responses
+ETags: HTTP caching with ETags for unchanged resources
+Monitoring and Observability
+Application Metrics
+@Component
+public class PhotoCrmMetrics {
+    
+    private final Counter photoUploads = Counter.builder("photo_uploads_total")
+        .description("Total number of photo uploads")
+        .tag("tenant", "unknown")
+        .register(Metrics.globalRegistry);
+    
+    private final Timer paymentProcessingTime = Timer.builder("payment_processing_duration")
+        .description("Payment processing duration")
+        .register(Metrics.globalRegistry);
+    
+    private final Gauge activeUsers = Gauge.builder("active_users")
+        .description("Number of active users")
+        .register(Metrics.globalRegistry, this, PhotoCrmMetrics::getActiveUserCount);
+}
+Health Checks
+@Component
+public class PhotoCrmHealthIndicator implements HealthIndicator {
+    
+    @Override
+    public Health health() {
+        return Health.up()
+            .withDetail("database", checkDatabase())
+            .withDetail("redis", checkRedis())
+            .withDetail("s3", checkS3())
+            .withDetail("payment_gateway", checkPaymentGateway())
+            .build();
+    }
+}
+Technology Stack Recommendations
+Backend Technology Stack
+Core Framework
+Spring Boot 3.2+: Latest LTS version with virtual threads support
+Java 17: LTS version with performance improvements
+Spring Security 6: OAuth2 resource server with JWT
+Spring Data JPA: Database abstraction with Hibernate 6
+Spring Cloud Gateway: API gateway with load balancing
+Database & Caching
+PostgreSQL 15+: Primary database with JSON support
+Redis 7: Session storage and caching
+HikariCP: High-performance connection pooling
+Flyway: Database migration management
+Cloud & Storage
+AWS S3: Primary photo storage
+AWS CloudFront: CDN for photo delivery
+AWS Lambda: Serverless image processing
+AWS RDS: Managed PostgreSQL with read replicas
+Frontend Technology Stack
+Core Framework
+React 18: Latest version with concurrent features
+TypeScript 5: Type safety and developer experience
+Vite: Fast build tool and development server
+React Router 6: Client-side routing
+UI & Styling
+Tailwind CSS 3: Utility-first CSS framework
+Shadcn-ui: High-quality React components
+Framer Motion: Smooth animations and transitions
+React Hook Form: Form management with validation
+State Management
+Zustand: Lightweight state management
+TanStack Query: Server state management and caching
+React Context: Global application state
+DevOps & Infrastructure
+Containerization
+Docker: Application containerization
+Docker Compose: Local development environment
+Multi-stage builds: Optimized production images
+Orchestration
+Kubernetes: Container orchestration
+Helm Charts: Kubernetes package management
+Ingress Controller: Load balancing and SSL termination
+CI/CD Pipeline
+GitHub Actions: Automated testing and deployment
+SonarQube: Code quality analysis
+Trivy: Container security scanning
+ArgoCD: GitOps deployment
+Monitoring & Logging
+Prometheus: Metrics collection
+Grafana: Metrics visualization
+ELK Stack: Centralized logging (Elasticsearch, Logstash, Kibana)
+Jaeger: Distributed tracing
+Deployment Architecture
+Production Environment Architecture
+@startuml Deployment_Architecture
+
+!define RECTANGLE class
+
+package "Internet" {
+    [Users] as users
+    [CDN (CloudFront)] as cdn
+}
+
+package "AWS Load Balancer" {
+    [Application Load Balancer] as alb
+    [Network Load Balancer] as nlb
+}
+
+package "Kubernetes Cluster" {
+    package "Ingress" {
+        [NGINX Ingress Controller] as ingress
+    }
+    
+    package "Application Pods" {
+        [API Gateway Pod] as gateway_pod
+        [Auth Service Pod] as auth_pod
+        [Photo Service Pod] as photo_pod
+        [Order Service Pod] as order_pod
+        [Payment Service Pod] as payment_pod
+    }
+    
+    package "Background Jobs" {
+        [Job Processor Pod] as job_pod
+        [Scheduler Pod] as scheduler_pod
+    }
+}
+
+package "Data Layer" {
+    [RDS PostgreSQL Primary] as db_primary
+    [RDS PostgreSQL Replica] as db_replica
+    [ElastiCache Redis] as redis
+}
+
+package "Storage" {
+    [S3 Bucket] as s3
+    [Lambda Functions] as lambda
+}
+
+package "External Services" {
+    [Stripe API] as stripe
+    [Razorpay API] as razorpay
+    [SendGrid] as sendgrid
+}
+
+package "Monitoring" {
+    [Prometheus] as prometheus
+    [Grafana] as grafana
+    [ELK Stack] as elk
+}
+
+' User flow
+users --> cdn
+cdn --> alb
+alb --> ingress
+ingress --> gateway_pod
+
+' Internal service communication
+gateway_pod --> auth_pod
+gateway_pod --> photo_pod
+gateway_pod --> order_pod
+gateway_pod --> payment_pod
+
+' Data connections
+auth_pod --> redis
+photo_pod --> s3
+photo_pod --> lambda
+order_pod --> db_primary
+order_pod --> db_replica
+payment_pod --> db_primary
+payment_pod --> stripe
+payment_pod --> razorpay
+
+' Background processing
+job_pod --> db_primary
+job_pod --> s3
+scheduler_pod --> redis
+
+' Monitoring connections
+gateway_pod --> prometheus
+auth_pod --> prometheus
+photo_pod --> prometheus
+order_pod --> prometheus
+payment_pod --> prometheus
+prometheus --> grafana
+gateway_pod --> elk
+
+@enduml
+Environment Configuration
+Development Environment
+# docker-compose.dev.yml
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=dev
+      - DATABASE_URL=jdbc:postgresql://db:5432/photocrm_dev
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - db
+      - redis
+      - minio
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: photocrm_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+Production Kubernetes Deployment
+# k8s/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: photo-crm-api
+  labels:
+    app: photo-crm-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: photo-crm-api
+  template:
+    metadata:
+      labels:
+        app: photo-crm-api
+    spec:
+      containers:
+      - name: api
+        image: photocrm/api:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "prod"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: url
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: jwt-secret
+              key: secret
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+Infrastructure as Code
+Terraform Configuration
+# infrastructure/main.tf
+provider "aws" {
+  region = var.aws_region
+}
+
+# VPC and Networking
+module "vpc" {
+  source = "terraform-aws-modules/vpc/aws"
+  
+  name = "photocrm-vpc"
+  cidr = "10.0.0.0/16"
+  
+  azs             = ["${var.aws_region}a", "${var.aws_region}b", "${var.aws_region}c"]
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+  
+  enable_nat_gateway = true
+  enable_vpn_gateway = false
+  
+  tags = {
+    Environment = var.environment
+    Project     = "PhotoCRM"
+  }
+}
+
+# RDS PostgreSQL
+resource "aws_db_instance" "main" {
+  identifier = "photocrm-${var.environment}"
+  
+  engine         = "postgres"
+  engine_version = "15.4"
+  instance_class = "db.t3.medium"
+  
+  allocated_storage     = 100
+  max_allocated_storage = 1000
+  storage_encrypted     = true
+  
+  db_name  = "photocrm"
+  username = var.db_username
+  password = var.db_password
+  
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  db_subnet_group_name   = aws_db_subnet_group.main.name
+  
+  backup_retention_period = 7
+  backup_window          = "03:00-04:00"
+  maintenance_window     = "sun:04:00-sun:05:00"
+  
+  skip_final_snapshot = var.environment != "prod"
+  
+  tags = {
+    Environment = var.environment
+    Project     = "PhotoCRM"
+  }
+}
+
+# S3 Bucket for Photos
+resource "aws_s3_bucket" "photos" {
+  bucket = "photocrm-photos-${var.environment}-${random_id.bucket_suffix.hex}"
+  
+  tags = {
+    Environment = var.environment
+    Project     = "PhotoCRM"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "photos" {
+  bucket = aws_s3_bucket.photos.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "photos" {
+  bucket = aws_s3_bucket.photos.id
+  
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# CloudFront Distribution
+resource "aws_cloudfront_distribution" "photos_cdn" {
+  origin {
+    domain_name = aws_s3_bucket.photos.bucket_regional_domain_name
+    origin_id   = "S3-${aws_s3_bucket.photos.bucket}"
+    
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.photos.cloudfront_access_identity_path
+    }
+  }
+  
+  enabled = true
+  
+  default_cache_behavior {
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD"]
+    target_origin_id       = "S3-${aws_s3_bucket.photos.bucket}"
+    compress               = true
+    viewer_protocol_policy = "redirect-to-https"
+    
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+    
+    min_ttl     = 0
+    default_ttl = 3600
+    max_ttl     = 86400
+  }
+  
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+  
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+  
+  tags = {
+    Environment = var.environment
+    Project     = "PhotoCRM"
+  }
+}
+File Structure Overview
+photo-crm-saas/
+├── backend/
+│   ├── src/
+│   │   ├── main/
+│   │   │   ├── java/
+│   │   │   │   └── com/photocrm/
+│   │   │   │       ├── PhotoCrmApplication.java
+│   │   │   │       ├── config/
+│   │   │   │       │   ├── SecurityConfig.java
+│   │   │   │       │   ├── DatabaseConfig.java
+│   │   │   │       │   ├── RedisConfig.java
+│   │   │   │       │   └── S3Config.java
+│   │   │   │       ├── controller/
+│   │   │   │       │   ├── AuthController.java
+│   │   │   │       │   ├── TenantController.java
+│   │   │   │       │   ├── UserController.java
+│   │   │   │       │   ├── OrderController.java
+│   │   │   │       │   ├── PhotoController.java
+│   │   │   │       │   ├── GalleryController.java
+│   │   │   │       │   ├── InvoiceController.java
+│   │   │   │       │   └── PaymentController.java
+│   │   │   │       ├── service/
+│   │   │   │       │   ├── AuthService.java
+│   │   │   │       │   ├── TenantService.java
+│   │   │   │       │   ├── UserService.java
+│   │   │   │       │   ├── OrderService.java
+│   │   │   │       │   ├── PhotoService.java
+│   │   │   │       │   ├── InvoiceService.java
+│   │   │   │       │   └── PaymentService.java
+│   │   │   │       ├── repository/
+│   │   │   │       │   ├── TenantRepository.java
+│   │   │   │       │   ├── UserRepository.java
+│   │   │   │       │   ├── OrderRepository.java
+│   │   │   │       │   ├── PhotoRepository.java
+│   │   │   │       │   ├── InvoiceRepository.java
+│   │   │   │       │   └── PaymentRepository.java
+│   │   │   │       ├── entity/
+│   │   │   │       │   ├── TenantEntity.java
+│   │   │   │       │   ├── UserEntity.java
+│   │   │   │       │   ├── OrderEntity.java
+│   │   │   │       │   ├── PhotoEntity.java
+│   │   │   │       │   ├── InvoiceEntity.java
+│   │   │   │       │   └── PaymentEntity.java
+│   │   │   │       ├── dto/
+│   │   │   │       │   ├── request/
+│   │   │   │       │   └── response/
+│   │   │   │       ├── security/
+│   │   │   │       │   ├── JwtAuthenticationFilter.java
+│   │   │   │       │   ├── TenantContext.java
+│   │   │   │       │   └── MultiTenantInterceptor.java
+│   │   │   │       └── util/
+│   │   │   │           ├── JwtUtil.java
+│   │   │   │           ├── S3Util.java
+│   │   │   │           └── ImageUtil.java
+│   │   │   └── resources/
+│   │   │       ├── application.yml
+│   │   │       ├── application-dev.yml
+│   │   │       ├── application-prod.yml
+│   │   │       └── db/migration/
+│   │   │           ├── V1__Create_tenants_table.sql
+│   │   │           ├── V2__Create_users_table.sql
+│   │   │           ├── V3__Create_orders_table.sql
+│   │   │           ├── V4__Create_photos_table.sql
+│   │   │           ├── V5__Create_invoices_table.sql
+│   │   │           └── V6__Create_payments_table.sql
+│   │   └── test/
+│   ├── Dockerfile
+│   ├── pom.xml
+│   └── docker-compose.yml
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── ui/                    # Shadcn-ui components
+│   │   │   ├── auth/
+│   │   │   │   ├── LoginForm.tsx
+│   │   │   │   └── ProtectedRoute.tsx
+│   │   │   ├── dashboard/
+│   │   │   │   ├── DashboardLayout.tsx
+│   │   │   │   ├── StatsCards.tsx
+│   │   │   │   └── RecentOrders.tsx
+│   │   │   ├── orders/
+│   │   │   │   ├── OrderList.tsx
+│   │   │   │   ├── OrderForm.tsx
+│   │   │   │   └── OrderDetails.tsx
+│   │   │   ├── photos/
+│   │   │   │   ├── PhotoUpload.tsx
+│   │   │   │   ├── PhotoGallery.tsx
+│   │   │   │   └── PhotoSelection.tsx
+│   │   │   ├── gallery/
+│   │   │   │   ├── PublicGallery.tsx
+│   │   │   │   ├── PhotoGrid.tsx
+│   │   │   │   └── SelectionCart.tsx
+│   │   │   ├── invoices/
+│   │   │   │   ├── InvoiceList.tsx
+│   │   │   │   ├── InvoiceForm.tsx
+│   │   │   │   └── InvoicePreview.tsx
+│   │   │   └── payments/
+│   │   │       ├── PaymentForm.tsx
+│   │   │       └── PaymentSuccess.tsx
+│   │   ├── pages/
+│   │   │   ├── auth/
+│   │   │   │   ├── LoginPage.tsx
+│   │   │   │   └── RegisterPage.tsx
+│   │   │   ├── dashboard/
+│   │   │   │   └── DashboardPage.tsx
+│   │   │   ├── orders/
+│   │   │   │   ├── OrdersPage.tsx
+│   │   │   │   └── OrderDetailsPage.tsx
+│   │   │   ├── gallery/
+│   │   │   │   └── PublicGalleryPage.tsx
+│   │   │   └── payments/
+│   │   │       └── PaymentPage.tsx
+│   │   ├── hooks/
+│   │   │   ├── useAuth.ts
+│   │   │   ├── useOrders.ts
+│   │   │   ├── usePhotos.ts
+│   │   │   └── usePayments.ts
+│   │   ├── services/
+│   │   │   ├── api.ts
+│   │   │   ├── auth.ts
+│   │   │   ├── orders.ts
+│   │   │   ├── photos.ts
+│   │   │   └── payments.ts
+│   │   ├── store/
+│   │   │   ├── authStore.ts
+│   │   │   ├── orderStore.ts
+│   │   │   └── photoStore.ts
+│   │   ├── types/
+│   │   │   ├── auth.ts
+│   │   │   ├── order.ts
+│   │   │   ├── photo.ts
+│   │   │   └── payment.ts
+│   │   ├── utils/
+│   │   │   ├── constants.ts
+│   │   │   ├── helpers.ts
+│   │   │   └── validation.ts
+│   │   ├── App.tsx
+│   │   ├── main.tsx
+│   │   └── index.css
+│   ├── public/
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── tailwind.config.js
+│   └── Dockerfile
+├── infrastructure/
+│   ├── terraform/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   ├── outputs.tf
+│   │   └── modules/
+│   │       ├── vpc/
+│   │       ├── rds/
+│   │       ├── s3/
+│   │       └── cloudfront/
+│   └── k8s/
+│       ├── namespace.yml
+│       ├── deployment.yml
+│       ├── service.yml
+│       ├── ingress.yml
+│       ├── configmap.yml
+│       └── secrets.yml
+├── docs/
+│   ├── api/
+│   │   └── openapi.yml
+│   ├── architecture/
+│   │   ├── system_design.md
+│   │   ├── database_schema.md
+│   │   └── security_guide.md
+│   └── deployment/
+│       ├── local_setup.md
+│       ├── production_deployment.md
+│       └── monitoring_guide.md
+├── scripts/
+│   ├── setup-dev.sh
+│   ├── deploy-prod.sh
+│   └── backup-db.sh
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       ├── cd.yml
+│       └── security-scan.yml
+├── docker-compose.yml
+├── docker-compose.prod.yml
+├── README.md
+└── .gitignore
+Unclear Aspects & Assumptions
+Technical Clarifications Needed
+Photo Storage Retention Policy: How long should photos be retained after order completion? Should we implement automatic archiving to cheaper storage tiers (S3 Glacier) after a certain period?
+
+Image Processing Requirements: What specific image processing capabilities are needed beyond thumbnail generation? Should we support watermarking, resizing, format conversion, or advanced editing features?
+
+Multi-Region Deployment: Is global deployment required, or can we start with a single region? This affects CDN strategy, data replication, and compliance requirements.
+
+Integration Requirements: Which third-party services need integration beyond payment gateways? Consider accounting software (QuickBooks), marketing tools (Mailchimp), or social media platforms.
+
+Mobile App Strategy: Should we develop native mobile apps for staff, or is a Progressive Web App (PWA) sufficient for the initial release?
+
+Business Logic Assumptions
+Tenant Billing Model: Assumed subscription-based billing with photo storage limits. Alternative models like pay-per-photo or revenue sharing may require different architecture.
+
+Photo Selection Limits: Assumed clients can select unlimited photos with per-photo pricing. Some studios may prefer package-based pricing with selection limits.
+
+User Roles: Assumed three primary roles (Admin, Staff, Client). Some studios may need more granular permissions or custom roles.
+
+Order Workflow: Assumed linear workflow (Create → Upload → Select → Pay → Download). Some studios may need more complex workflows with approval stages.
+
+Security & Compliance Assumptions
+Data Residency: Assumed US-based deployment initially. International expansion may require data localization and GDPR compliance.
+
+Photo Ownership: Assumed studios own uploaded photos. Need clarity on client rights, usage permissions, and deletion policies.
+
+Audit Requirements: Implemented basic audit logging. Some enterprise clients may need more comprehensive audit trails or compliance certifications.
+
+Performance & Scale Assumptions
+Growth Projections: Designed for 1000 concurrent users initially, scaling to 10,000+ users. Actual growth patterns may require architecture adjustments.
+
+Photo Volume: Assumed average 100 photos per order, 50MB per photo. High-volume events (weddings with 1000+ photos) may need special handling.
+
+Geographic Distribution: Assumed North American market initially. Global expansion requires CDN optimization and regional data centers.
+
+Document Prepared By: Bob, System Architect
+Technical Review Required By: Development Team Lead, DevOps Engineer
+Business Review Required By: Product Manager, CTO
