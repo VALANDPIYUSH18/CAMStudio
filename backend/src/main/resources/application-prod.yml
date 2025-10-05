@@ -1,0 +1,24 @@
+spring:
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+  datasource:
+    hikari:
+      leak-detection-threshold: 0
+
+logging:
+  level:
+    com.photocrm: INFO
+    org.springframework.web: WARN
+    org.springframework.security: WARN
+    org.hibernate.SQL: WARN
+    root: WARN
+
+# Production specific configuration
+app:
+  tenant:
+    auto-create-schema: false
+  photo:
+    cdn-url: ${CDN_URL:https://cdn.photocrm.com}
